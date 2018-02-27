@@ -19,6 +19,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/spawn.hpp>
 #include <boost/config.hpp>
+#include <atomic>
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -27,11 +28,32 @@
 #include <thread>
 #include <vector>
 #include <date/date.h>
+#include <chrono>
 #include "binary_file.h"
 #include "hash_literal.h"
 
 using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 namespace http = boost::beast::http;    // from <boost/beast/http.hpp>
+static std::atomic<std::int64_t> requests_served {0};
+void log_args() {std::cout << '\n';}
+
+template<class Arg, class... Args>
+void log_args(Arg const& arg, Args const&... args)
+{
+    std::cout << arg;
+    log_args(args...);
+}
+
+template<typename... Args>
+void
+log(Args const&... args)
+{
+    auto tp = std::chrono::system_clock::now();
+    using namespace date;
+    std::cout << "[" << tp << "] "; // date library provides ostream operator for timepoint
+    log_args(args...);
+}
+
 
 // Return a reasonable mime type based on the extension of a file.
 boost::beast::string_view
@@ -144,8 +166,8 @@ handle_request(
         return send(bad_request("Illegal request-target"));
 
     std::string path(req.target().data(),req.target().size());
+    log("<",requests_served, "> Serving: ", path);
     // Attempt to open the linked file
-    std::cerr << "Getting: " << path << '\n';
     boost::beast::string_view body = blob_files::get_file(path);
 
     // Handle the case where the file doesn't exist
@@ -176,6 +198,9 @@ handle_request(
     res.set(http::field::content_encoding, "gzip");
     res.content_length(size);
     res.keep_alive(req.keep_alive());
+
+    ++requests_served;
+
     return send(std::move(res));
 }
 
@@ -185,10 +210,9 @@ handle_request(
 void
 fail(boost::system::error_code ec, char const* what)
 {
-
-    auto t = std::chrono::system_clock::now();
-    auto date = date::to_utc_time(t);
-    std::cerr << "[" << date << "]" << what << ": " << ec.message() << "\n";
+    using namespace date;
+    auto tp = std::chrono::system_clock::now();
+    std::cerr << "[" << tp << "]" << what << ": " << ec.message() << "\n";
 }
 
 // This is the C++11 equivalent of a generic lambda.
