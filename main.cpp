@@ -26,6 +26,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <date/date.h>
+#include "binary_file.h"
+#include "hash_literal.h"
 
 using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 namespace http = boost::beast::http;    // from <boost/beast/http.hpp>
@@ -42,7 +45,19 @@ mime_type(boost::beast::string_view path)
             return boost::beast::string_view{};
         return path.substr(pos);
     }();
-    if(iequals(ext, ".htm"))  return "text/html";
+    using namespace util::literals;
+    switch(util::fnv1a(ext.data(), ext.size())){
+        case ".htm"_f:
+        case ".html"_f:
+        case ".php"_f:
+            return "text/html";
+        case ".css"_f:
+            return "text/css";
+        default:
+            return "text/html";
+    }
+    /*
+    if(iequals(ext, ".htm"))
     if(iequals(ext, ".html")) return "text/html";
     if(iequals(ext, ".php"))  return "text/html";
     if(iequals(ext, ".css"))  return "text/css";
@@ -63,34 +78,7 @@ mime_type(boost::beast::string_view path)
     if(iequals(ext, ".tif"))  return "image/tiff";
     if(iequals(ext, ".svg"))  return "image/svg+xml";
     if(iequals(ext, ".svgz")) return "image/svg+xml";
-    return "application/text";
-}
-
-// Append an HTTP rel-path to a local filesystem path.
-// The returned path is normalized for the platform.
-std::string
-path_cat(
-        boost::beast::string_view base,
-        boost::beast::string_view path)
-{
-    if(base.empty())
-        return path.to_string();
-    std::string result = base.to_string();
-#if BOOST_MSVC
-    char constexpr path_separator = '\\';
-    if(result.back() == path_separator)
-        result.resize(result.size() - 1);
-    result.append(path.data(), path.size());
-    for(auto& c : result)
-        if(c == '/')
-            c = path_separator;
-#else
-    char constexpr path_separator = '/';
-    if(result.back() == path_separator)
-        result.resize(result.size() - 1);
-    result.append(path.data(), path.size());
-#endif
-    return result;
+    return "application/text";*/
 }
 
 // This function produces an HTTP response for the given
@@ -102,7 +90,6 @@ template<
         class Send>
 void
 handle_request(
-        boost::beast::string_view doc_root,
         http::request<Body, http::basic_fields<Allocator>>&& req,
         Send&& send)
 {
@@ -156,23 +143,14 @@ handle_request(
         req.target().find("..") != boost::beast::string_view::npos)
         return send(bad_request("Illegal request-target"));
 
-    // Build the path to the requested file
-    std::string path = path_cat(doc_root, req.target());
-    if(req.target().back() == '/')
-        path.append("index.html");
-
-    // Attempt to open the file
-    boost::beast::error_code ec;
-    http::file_body::value_type body;
-    body.open(path.c_str(), boost::beast::file_mode::scan, ec);
+    std::string path(req.target().data(),req.target().size());
+    // Attempt to open the linked file
+    std::cerr << "Getting: " << path << '\n';
+    boost::beast::string_view body = blob_files::get_file(path);
 
     // Handle the case where the file doesn't exist
-    if(ec == boost::system::errc::no_such_file_or_directory)
+    if(body.empty())
         return send(not_found(req.target()));
-
-    // Handle an unknown error
-    if(ec)
-        return send(server_error(ec.message()));
 
     // Cache the size since we need it after the move
     auto const size = body.size();
@@ -189,12 +167,13 @@ handle_request(
     }
 
     // Respond to GET request
-    http::response<http::file_body> res{
+    http::response<http::string_body> res{
             std::piecewise_construct,
             std::make_tuple(std::move(body)),
             std::make_tuple(http::status::ok, req.version())};
     res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
     res.set(http::field::content_type, mime_type(path));
+    res.set(http::field::content_encoding, "gzip");
     res.content_length(size);
     res.keep_alive(req.keep_alive());
     return send(std::move(res));
@@ -206,7 +185,10 @@ handle_request(
 void
 fail(boost::system::error_code ec, char const* what)
 {
-    std::cerr << what << ": " << ec.message() << "\n";
+
+    auto t = std::chrono::system_clock::now();
+    auto date = date::to_utc_time(t);
+    std::cerr << "[" << date << "]" << what << ": " << ec.message() << "\n";
 }
 
 // This is the C++11 equivalent of a generic lambda.
@@ -251,7 +233,6 @@ struct send_lambda
 void
 do_session(
         tcp::socket& socket,
-        std::string const& doc_root,
         boost::asio::yield_context yield)
 {
     bool close = false;
@@ -274,7 +255,7 @@ do_session(
             return fail(ec, "read");
 
         // Send the response
-        handle_request(doc_root, std::move(req), lambda);
+        handle_request(std::move(req), lambda);
         if(ec)
             return fail(ec, "write");
         if(close)
@@ -298,7 +279,6 @@ void
 do_listen(
         boost::asio::io_context& ioc,
         tcp::endpoint endpoint,
-        std::string const& doc_root,
         boost::asio::yield_context yield)
 {
     boost::system::error_code ec;
@@ -336,7 +316,6 @@ do_listen(
                     std::bind(
                             &do_session,
                             std::move(socket),
-                            doc_root,
                             std::placeholders::_1));
     }
 }
@@ -344,18 +323,17 @@ do_listen(
 int main(int argc, char* argv[])
 {
     // Check command line arguments.
-    if (argc != 5)
+    if (argc != 4)
     {
         std::cerr <<
-                  "Usage: http-server-coro <address> <port> <doc_root> <threads>\n" <<
+                  "Usage: httpserver-v2 <address> <port> <threads>\n" <<
                   "Example:\n" <<
-                  "    http-server-coro 0.0.0.0 8080 . 1\n";
+                  "    http-server-coro 0.0.0.0 8080 1\n";
         return EXIT_FAILURE;
     }
     auto const address = boost::asio::ip::make_address(argv[1]);
     auto const port = static_cast<unsigned short>(std::atoi(argv[2]));
-    std::string const doc_root = argv[3];
-    auto const threads = std::max<int>(1, std::atoi(argv[4]));
+    auto const threads = std::max<int>(1, std::atoi(argv[3]));
 
     // The io_context is required for all I/O
     boost::asio::io_context ioc{threads};
@@ -366,7 +344,6 @@ int main(int argc, char* argv[])
                                &do_listen,
                                std::ref(ioc),
                                tcp::endpoint{address, port},
-                               doc_root,
                                std::placeholders::_1));
 
     // Run the I/O service on the requested number of threads
