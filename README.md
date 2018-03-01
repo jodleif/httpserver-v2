@@ -11,3 +11,13 @@ Linking a unified html / js / css gzipped-bundle into the binary and it hosting 
 ### Preview
 
 [jooivind.com](jooivind.com) - Hosted on the smallest Digital Ocean droplet available.
+
+### Building
+
+Clone repo and cd into it, then:
+```
+mkdir build
+cd build
+cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ../
+
+```
