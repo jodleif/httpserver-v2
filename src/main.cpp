@@ -12,7 +12,7 @@
 // Example: HTTP server, coroutine
 //
 //------------------------------------------------------------------------------
-
+#define BOOST_COROUTINES_NO_DEPRECATION_WARNING
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
@@ -35,6 +35,7 @@
 using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 namespace http = boost::beast::http;    // from <boost/beast/http.hpp>
 static std::atomic<std::int64_t> requests_served {0};
+namespace {
 void log_args() {std::cout << '\n';}
 
 template<class Arg, class... Args>
@@ -54,6 +55,16 @@ log(Args const&... args)
     log_args(args...);
 }
 
+//------------------------------------------------------------------------------
+
+// Report a failure
+void
+fail(boost::system::error_code ec, char const* what)
+{
+    using namespace date;
+    auto tp = std::chrono::system_clock::now();
+    std::cerr << "[" << tp << "]" << what << ": " << ec.message() << "\n";
+}
 
 // Return a reasonable mime type based on the extension of a file.
 boost::beast::string_view
@@ -78,31 +89,9 @@ mime_type(boost::beast::string_view path)
         default:
             return "text/html";
     }
-    /*
-    if(iequals(ext, ".htm"))
-    if(iequals(ext, ".html")) return "text/html";
-    if(iequals(ext, ".php"))  return "text/html";
-    if(iequals(ext, ".css"))  return "text/css";
-    if(iequals(ext, ".txt"))  return "text/plain";
-    if(iequals(ext, ".js"))   return "application/javascript";
-    if(iequals(ext, ".json")) return "application/json";
-    if(iequals(ext, ".xml"))  return "application/xml";
-    if(iequals(ext, ".swf"))  return "application/x-shockwave-flash";
-    if(iequals(ext, ".flv"))  return "video/x-flv";
-    if(iequals(ext, ".png"))  return "image/png";
-    if(iequals(ext, ".jpe"))  return "image/jpeg";
-    if(iequals(ext, ".jpeg")) return "image/jpeg";
-    if(iequals(ext, ".jpg"))  return "image/jpeg";
-    if(iequals(ext, ".gif"))  return "image/gif";
-    if(iequals(ext, ".bmp"))  return "image/bmp";
-    if(iequals(ext, ".ico"))  return "image/vnd.microsoft.icon";
-    if(iequals(ext, ".tiff")) return "image/tiff";
-    if(iequals(ext, ".tif"))  return "image/tiff";
-    if(iequals(ext, ".svg"))  return "image/svg+xml";
-    if(iequals(ext, ".svgz")) return "image/svg+xml";
-    return "application/text";*/
 }
 
+}
 // This function produces an HTTP response for the given
 // request. The type of the response object depends on the
 // contents of the request, so the interface requires the
@@ -137,19 +126,6 @@ handle_request(
                 res.set(http::field::content_type, "text/html");
                 res.keep_alive(req.keep_alive());
                 res.body() = "The resource '" + target.to_string() + "' was not found.";
-                res.prepare_payload();
-                return res;
-            };
-
-    // Returns a server error response
-    auto const server_error =
-            [&req](boost::beast::string_view what)
-            {
-                http::response<http::string_body> res{http::status::internal_server_error, req.version()};
-                res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
-                res.set(http::field::content_type, "text/html");
-                res.keep_alive(req.keep_alive());
-                res.body() = "An error occurred: '" + what.to_string() + "'";
                 res.prepare_payload();
                 return res;
             };
@@ -202,17 +178,6 @@ handle_request(
     ++requests_served;
 
     return send(std::move(res));
-}
-
-//------------------------------------------------------------------------------
-
-// Report a failure
-void
-fail(boost::system::error_code ec, char const* what)
-{
-    using namespace date;
-    auto tp = std::chrono::system_clock::now();
-    std::cerr << "[" << tp << "]" << what << ": " << ec.message() << "\n";
 }
 
 // This is the C++11 equivalent of a generic lambda.
